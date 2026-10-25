@@ -1,4 +1,4 @@
-# Candle Club
+# The Candle Club
 
 Order book and ledger for a floral and candle decor business. Built with React, TypeScript, Vite and Firebase (Auth + Firestore).
 
@@ -19,7 +19,7 @@ In the [Firebase console](https://console.firebase.google.com/project/candle-clu
 1. **Authentication** → Get started → Sign-in method → enable:
    - **Google**
    - **Email/Password**, and inside it also switch on **Email link (passwordless sign-in)**. Team invites are sent as sign-in links.
-2. **Authentication → Templates**: set the public-facing name to "Candle Club" so emails don't say "project-287138614093".
+2. **Authentication → Templates**: set the public-facing name to "The Candle Club" so emails don't say "project-287138614093".
 3. **Firestore Database** is created. Deploy the rules and the invites index:
    ```bash
    firebase login            # with an account that has access to candle-club-a49ac

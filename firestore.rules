@@ -1,0 +1,95 @@
+rules_version = '2';
+
+// Candle Club: one shared book per business, with role-based access.
+//   users/{uid}                          { bizId }  which business this person is in
+//   businesses/{biz}                     { name, ownerUid, settings }
+//   businesses/{biz}/members/{uid}       { uid, email, name, role }   role: owner | admin | staff | viewer
+//   businesses/{biz}/invites/{email}     { email, role, bizId, bizName, invitedBy, ... }
+//   businesses/{biz}/orders/{id}         order with embedded payments
+//   businesses/{biz}/expenses/{id}       expense
+// Keep in step with src/lib/roles.ts.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function verified() { return signedIn() && request.auth.token.email_verified == true; }
+    function myEmail() { return request.auth.token.email.lower(); }
+
+    function bizPath(biz) { return /databases/$(database)/documents/businesses/$(biz); }
+    function memberPath(biz) { return /databases/$(database)/documents/businesses/$(biz)/members/$(request.auth.uid); }
+    function invitePath(biz) { return /databases/$(database)/documents/businesses/$(biz)/invites/$(myEmail()); }
+
+    function roleIn(biz, roles) {
+      return signedIn() && exists(memberPath(biz)) && get(memberPath(biz)).data.role in roles;
+    }
+    function isMember(biz) { return roleIn(biz, ['owner', 'admin', 'staff', 'viewer']); }
+    function canEdit(biz)  { return roleIn(biz, ['owner', 'admin', 'staff']); }
+    function isAdmin(biz)  { return roleIn(biz, ['owner', 'admin']); }
+
+    match /users/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /businesses/{biz} {
+      allow read: if isMember(biz);
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if isAdmin(biz) && request.resource.data.ownerUid == resource.data.ownerUid;
+
+      match /members/{memberId} {
+        allow read: if isMember(biz);
+
+        allow create: if signedIn()
+          && memberId == request.auth.uid
+          && request.resource.data.uid == request.auth.uid
+          && (
+            // Accepting an invite sent to this person's verified email, with exactly the invited role.
+            (request.resource.data.role != 'owner'
+              && verified()
+              && exists(invitePath(biz))
+              && get(invitePath(biz)).data.role == request.resource.data.role)
+            ||
+            // Creating a brand-new business and becoming its owner in the same batch.
+            (request.resource.data.role == 'owner'
+              && !exists(bizPath(biz))
+              && getAfter(bizPath(biz)).data.ownerUid == request.auth.uid)
+          );
+
+        // Admins change roles; the owner's role can't be changed and nobody can be made owner.
+        allow update: if isAdmin(biz)
+          && resource.data.role != 'owner'
+          && request.resource.data.role in ['admin', 'staff', 'viewer']
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role']);
+
+        // Admins remove people; anyone but the owner can leave.
+        allow delete: if resource.data.role != 'owner'
+          && (isAdmin(biz) || memberId == request.auth.uid);
+      }
+
+      match /invites/{inviteId} {
+        allow read, delete: if isAdmin(biz) || (verified() && inviteId == myEmail());
+        allow create, update: if isAdmin(biz)
+          && inviteId == request.resource.data.email
+          && request.resource.data.bizId == biz
+          && request.resource.data.role in ['admin', 'staff', 'viewer'];
+      }
+
+      match /orders/{orderId} {
+        allow read: if isMember(biz);
+        allow create: if canEdit(biz);
+        // Staff can edit orders and add payments, but can't remove payments already recorded.
+        allow update: if isAdmin(biz)
+          || (canEdit(biz) && request.resource.data.payments.hasAll(resource.data.payments));
+        allow delete: if isAdmin(biz);
+      }
+
+      match /expenses/{expenseId} {
+        allow read, write: if isAdmin(biz);
+      }
+    }
+
+    // Lets a signed-in person find invites addressed to them across businesses.
+    match /{path=**}/invites/{inviteId} {
+      allow read: if verified() && resource.data.email == myEmail();
+    }
+  }
+}
